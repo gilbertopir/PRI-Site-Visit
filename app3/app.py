@@ -17,7 +17,7 @@ from dropbox.files import WriteMode
 # Page config
 # -----------------------------
 st.set_page_config(
-    page_title="PR304 Site Tool",
+    page_title="PRI Site Visit App",
     layout="centered",
     initial_sidebar_state="collapsed"
 )
@@ -74,8 +74,7 @@ st.markdown("""
 DXF_PATH = Path(__file__).parent / "PR304.dxf"
 
 DROPBOX_TOKEN = st.secrets["DROPBOX_TOKEN"]
-DROPBOX_CSV    = "/PRI-SITE-APP/PR304_points.csv"
-DROPBOX_PP_CSV = "/PRI-SITE-APP/PR304_passing_places.csv"
+DROPBOX_FOLDER = "/PRI-SITE-APP"
 
 FEATURE_TYPES = [
     "Custom / Other",
@@ -436,18 +435,59 @@ def distance_warning(dist_m):
 
 
 # -----------------------------
-# Startup: load DXF
+# Startup: DXF selection
 # -----------------------------
-st.title("📍 PR304 Site Tool")
+st.title("📍 PRI Site Visit App")
 
-if not DXF_PATH.exists():
-    st.error("❌ PR304.dxf not found — place it in the same folder as app.py.")
+# Scan root folder for DXF files
+dxf_files = sorted(Path(__file__).parent.glob("*.dxf"))
+
+if not dxf_files:
+    st.error("❌ No .dxf files found — place at least one DXF file in the same folder as app.py.")
     st.stop()
 
+dxf_names = [f.name for f in dxf_files]
+
+# Handle DXF change confirmation
+if "pending_dxf" in st.session_state:
+    st.warning(f"⚠️ Switching to **{st.session_state['pending_dxf']}** will clear the current session. Are you sure?")
+    c1, c2 = st.columns(2)
+    if c1.button("Yes, switch site", type="primary", use_container_width=True, key="btn_confirm_dxf"):
+        st.session_state["selected_dxf"] = st.session_state.pop("pending_dxf")
+        st.session_state.pop("pp_next_id", None)
+        st.rerun()
+    if c2.button("Cancel", use_container_width=True, key="btn_cancel_dxf"):
+        st.session_state.pop("pending_dxf")
+        st.rerun()
+    st.stop()
+
+# First load — default to first DXF
+if "selected_dxf" not in st.session_state:
+    st.session_state["selected_dxf"] = dxf_names[0]
+
+selected_dxf = st.selectbox(
+    "Select Site / Alignment",
+    options=dxf_names,
+    index=dxf_names.index(st.session_state["selected_dxf"]),
+    key="dxf_selector"
+)
+
+# Trigger confirmation if engineer changes DXF
+if selected_dxf != st.session_state["selected_dxf"]:
+    st.session_state["pending_dxf"] = selected_dxf
+    st.rerun()
+
+# Set paths dynamically from selected DXF
+DXF_PATH    = Path(__file__).parent / st.session_state["selected_dxf"]
+dxf_stem    = DXF_PATH.stem
+DROPBOX_CSV    = f"{DROPBOX_FOLDER}/{dxf_stem}_points.csv"
+DROPBOX_PP_CSV = f"{DROPBOX_FOLDER}/{dxf_stem}_passing_places.csv"
+
+# Load alignment
 alignment = load_alignment_from_dxf(str(DXF_PATH))
 
 if alignment is None:
-    st.error("❌ Could not load a valid alignment from PR304.dxf.")
+    st.error(f"❌ Could not load a valid alignment from {st.session_state['selected_dxf']}.")
     st.stop()
 
 points   = alignment["points"]
@@ -463,7 +503,7 @@ gps_line = precompute_gps_line(tuple(points))
 phone_location = streamlit_geolocation()
 
 with st.expander("ℹ️ Alignment info", expanded=False):
-    st.write(f"**Layer:** `{alignment['layer']}` &nbsp;|&nbsp; **Entity:** `{alignment['entity']}`")
+    st.write(f"**Site:** `{dxf_stem}` &nbsp;|&nbsp; **Layer:** `{alignment['layer']}` &nbsp;|&nbsp; **Entity:** `{alignment['entity']}`")
     st.write(f"**Points:** `{len(points)}` &nbsp;|&nbsp; **Length:** `{total:.3f} m`")
 
 # -----------------------------
@@ -602,16 +642,16 @@ with tab1:
             distance_warning(dist_p)
 
             c1, c2 = st.columns(2)
-            c1.metric("Chainage",              f"{round(res['chainage'], 3)} m")
+            c1.metric("Chainage",               f"{round(res['chainage'], 3)} m")
             c2.metric("Distance from Alignment", f"{dist_p} m")
-            c1.metric("Easting",  round(ex, 3))
-            c2.metric("Northing", round(ny, 3))
-            c1.metric("Latitude",  round(lat_p, 8))
-            c2.metric("Longitude", round(lon_p, 8))
+            c1.metric("Easting",   round(res["easting"], 3))
+            c2.metric("Northing",  round(res["northing"], 3))
+            c1.metric("Latitude",  round(plat, 8))
+            c2.metric("Longitude", round(plon, 8))
 
             st.link_button(
-                "📍 Open in Google Maps",
-                f"https://www.google.com/maps/search/?api=1&query={lat_p},{lon_p}",
+                "📍 Open Projected Point in Google Maps",
+                f"https://www.google.com/maps/search/?api=1&query={plat},{plon}",
                 use_container_width=True
             )
 
@@ -711,6 +751,8 @@ with tab2:
             st.divider()
 
             if st.button("📌 Capture Point", type="primary", use_container_width=True, key="btn_capture"):
+                # Always store the projected point on the alignment, not raw phone GPS
+                proj_lon_c, proj_lat_c = osgb_to_gps.transform(res_c["easting"], res_c["northing"])
                 row = {
                     "timestamp":                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "feature_type":             feature_label,
@@ -721,10 +763,10 @@ with tab2:
                     "notes":                    notes.strip(),
                     "chainage_m":               ch_c,
                     "distance_from_alignment_m": dist_c,
-                    "latitude":                 round(lat_c, 8),
-                    "longitude":                round(lon_c, 8),
-                    "easting":                  round(ex_c, 3),
-                    "northing":                 round(ny_c, 3),
+                    "latitude":                 round(proj_lat_c, 8),
+                    "longitude":                round(proj_lon_c, 8),
+                    "easting":                  round(res_c["easting"], 3),
+                    "northing":                 round(res_c["northing"], 3),
                 }
                 try:
                     save_point_to_dropbox(row)
@@ -819,16 +861,18 @@ with tab3:
             st.divider()
 
             if st.button("💾 Save Passing Place", type="primary", use_container_width=True, key="btn_save_pp"):
+                # Always store the projected point on the alignment, not raw phone GPS
+                proj_lon_pp, proj_lat_pp = osgb_to_gps.transform(res_pp["easting"], res_pp["northing"])
                 pp_row = {
                     "id":               st.session_state["pp_next_id"],
                     "timestamp":        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "side":             pp_side,
                     "status":           pp_status,
                     "mid_chainage_m":   ch_pp,
-                    "mid_latitude":     round(lat_pp, 8),
-                    "mid_longitude":    round(lon_pp, 8),
-                    "mid_easting":      round(ex_pp, 3),
-                    "mid_northing":     round(ny_pp, 3),
+                    "mid_latitude":     round(proj_lat_pp, 8),
+                    "mid_longitude":    round(proj_lon_pp, 8),
+                    "mid_easting":      round(res_pp["easting"], 3),
+                    "mid_northing":     round(res_pp["northing"], 3),
                     "width_m":          round(pp_width, 1),
                     "length_m":         round(pp_length, 1),
                     "notes":            pp_notes.strip(),
@@ -884,7 +928,7 @@ with tab3:
         st.download_button(
             "⬇️ Download CSV",
             pp_df.to_csv(index=False),
-            file_name=f"PR304_passing_places_{datetime.now().strftime('%Y%m%d')}.csv",
+            file_name=f"{dxf_stem}_passing_places_{datetime.now().strftime('%Y%m%d')}.csv",
             mime="text/csv",
             use_container_width=True,
             key="btn_pp_download"
@@ -936,7 +980,7 @@ with tab4:
             st.download_button(
                 "⬇️ Download CSV",
                 df.to_csv(index=False),
-                file_name=f"PR304_points_{datetime.now().strftime('%Y%m%d')}.csv",
+                file_name=f"{dxf_stem}_points_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv",
                 use_container_width=True,
                 key="btn_download"
@@ -956,4 +1000,4 @@ with tab4:
             m = make_map(gps_line, extra_markers=extra)
             st_folium(m, width=None, height=500, returned_objects=[])
 
-st.caption("v1.0 • PR304 Site Tool • Chainage ↔ GPS • Point Capture • Dropbox Sync")
+st.caption("v1.1 • PRI Site Visit App • Chainage ↔ GPS • Point Capture • Dropbox Sync")
