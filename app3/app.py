@@ -770,6 +770,7 @@ with tab2:
                 }
                 try:
                     save_point_to_dropbox(row)
+                    st.session_state["last_saved"] = datetime.now().strftime("%d %b %Y %H:%M:%S")
                     st.success(f"✅ Saved: **{feature_label}** at chainage **{ch_c} m**")
                     st.balloons()
                 except Exception as e:
@@ -879,6 +880,7 @@ with tab3:
                 }
                 try:
                     save_pp_to_dropbox(pp_row)
+                    st.session_state["last_saved"] = datetime.now().strftime("%d %b %Y %H:%M:%S")
                     st.success(f"✅ Saved: **{st.session_state['pp_next_id']}** at chainage **{ch_pp} m**")
                     del st.session_state["pp_next_id"]  # force new ID on next load
                     st.balloons()
@@ -940,6 +942,11 @@ with tab3:
 # ==============================
 with tab4:
     st.subheader("📋 Captured Points")
+
+    if "last_saved" in st.session_state:
+        st.success(f"✅ Last saved to Dropbox: **{st.session_state['last_saved']}**")
+    else:
+        st.info("No saves recorded in this session yet.")
 
     col_r, col_d, col_x = st.columns(3)
 
